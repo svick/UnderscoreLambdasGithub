@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -36,8 +35,6 @@ namespace UnderscoreLambdasGithub
 
             var getFilesBlock = new TransformManyBlock<string, string>(path => GetFiles(path), commonOptions);
 
-            getFilesBlock.SendAsync(BasePath).Wait();
-
             var parseBlock = new TransformBlock<string, Data>(file => Parse(file), commonOptions);
 
             Data dataSummary = new Data();
@@ -62,46 +59,23 @@ namespace UnderscoreLambdasGithub
 
         private static void Print(Data lambdaData)
         {
-            Console.WriteLine($"single lambdas: {lambdaData.TotalSingleLambdasCount}, multi lambdas: {lambdaData.TotalMultiLambdasCount}");
-
             Console.WriteLine("Single lambdas:");
-            Print(lambdaData.SingleLambdas);
-
-            Console.WriteLine("Multi lambdas, one parameter:");
-            Print(lambdaData.MultiLambdasOneParameter);
-
-            Console.WriteLine("Multi lambdas, multi parameters:");
-            Print(lambdaData.MultiLambdasMultiParameters);
-        }
-
-        private static void Print(Dictionary<string, int> dictionary)
-        {
-            var data = dictionary.OrderByDescending(kvp => kvp.Value).Take(10);
-
-            Console.WriteLine($"Total: {dictionary.Values.Sum()}");
-
-            foreach (var kvp in data)
-            {
-                Console.WriteLine($"'{kvp.Key}'\t{kvp.Value}");
-            }
-
+            Console.WriteLine($"Total: {lambdaData.TotalSingleLambdasCount}");
+            Console.WriteLine($"Underscore: {lambdaData.TotalSingleLambdaUnderscoreCount}");
+            Console.WriteLine($"Underscore unused: {lambdaData.TotalSingleLambdaUnderscoreUnusedCount}");
             Console.WriteLine();
 
-            Console.WriteLine("| | count |");
-            Console.WriteLine("|---|---|");
+            Console.WriteLine("Multi lambdas:");
+            Console.WriteLine($"Total: {lambdaData.TotalMultiLambdasCount}");
+            Console.WriteLine($"Underscore: {lambdaData.TotalMultiLambdaUnderscoreCount}");
+            Console.WriteLine($"Underscore unused: {lambdaData.TotalMultiLambdaUnderscoreUnusedCount}");
+            Console.WriteLine();
 
-            Console.WriteLine($"| total | {dictionary.Values.Sum()} |");
-
-            foreach (var kvp in data)
-            {
-                Console.WriteLine($"| \"{Format(kvp.Key)}\" | {kvp.Value} |");
-            }
+            Console.WriteLine($"Other underscore: {lambdaData.TotalOtherUnderscoresCount}");
         }
 
-        private static string Format(string s) => s.Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t");
-
         //private static readonly string BasePath = @"C:\Users\Svick\AppData\Local\Temp\UnderscoreLambdasGithub\";
-        private static readonly string BasePath = @"E:\Temp\UnderscoreLambdasGithub\";
+        private static readonly string BasePath = @"C:\Temp\UnderscoreLambdasGithub\";
 
         private static async Task SendData(ITargetBlock<string> targetBlock)
         {
@@ -124,7 +98,10 @@ namespace UnderscoreLambdasGithub
                 .AddSyntaxTrees(syntaxTree)
                 .GetSemanticModel(syntaxTree);
 
-            var lambdas = syntaxTree.GetCompilationUnitRoot().DescendantNodes().OfType<LambdaExpressionSyntax>();
+            var handledUnderscores = new HashSet<ISymbol>();
+
+            var root = syntaxTree.GetCompilationUnitRoot();
+            var lambdas = root.DescendantNodes().OfType<LambdaExpressionSyntax>();
 
             foreach (var lambda in lambdas)
             {
@@ -154,28 +131,53 @@ namespace UnderscoreLambdasGithub
                 }
             }
 
+            foreach (var name in root.DescendantNodes().OfType<NameSyntax>())
+            {
+                if (name.ToString() != name.ToString().Trim())
+                    throw new Exception();
+
+                if (name.ToString() == "_")
+                {
+                    Print(name.Parent);
+
+                    var symbol = semanticModel.GetSymbolInfo(name).Symbol;
+
+                    if (handledUnderscores.Add(symbol))
+                    {
+                        data.OtherUnderscore();
+                        break;
+                    }
+                }
+            }
+
             return data;
+        }
+
+        private static void Print(SyntaxNode node)
+        {
+            var ancestors = node.AncestorsAndSelf();
+
+            var toPrint = ancestors.OfType<StatementSyntax>().FirstOrDefault() ??
+                          ancestors.OfType<ExpressionSyntax>().LastOrDefault() ?? node;
+
+            Console.WriteLine(toPrint);
+
+            File.AppendAllLines(@"C:\temp\UnderscoreLambdasGithub\other.txt", new[] {toPrint.ToString()});
         }
 
         private static void MultiLambda(Data lambdaData, List<ISymbol> names, List<IParameterSymbol> parameterSymbols)
         {
             lambdaData.MultiLambda();
 
-            var missingSymbols =
-            (from parameterSymbol in parameterSymbols
-                where !names.Contains(parameterSymbol)
-                select parameterSymbol.Name).ToList();
-
-            switch (missingSymbols.Count)
+            var underscoreParameter = parameterSymbols.FirstOrDefault(s => s.Name == "_");
+            if (underscoreParameter != null)
             {
-                case 0:
-                    break;
-                case 1:
-                    lambdaData.MultiLambdaOneUnused(missingSymbols.Single());
-                    break;
-                default:
-                    lambdaData.MultiLambdaMultiUnused(string.Join(", ", missingSymbols));
-                    break;
+                lambdaData.MultiLambdaUnderscore();
+
+                if (!names.Contains(underscoreParameter))
+                {
+                    lambdaData.MultiLambdaUnderscoreUnused();
+                }
             }
         }
 
@@ -183,9 +185,14 @@ namespace UnderscoreLambdasGithub
         {
             lambdaData.SingleLambda();
 
-            if (!names.Contains(parameterSymbol))
+            if (parameterSymbol.Name == "_")
             {
-                lambdaData.SingleLambdaUnused(parameterSymbol.Name);
+                lambdaData.SingleLambdaUnderscore();
+
+                if (!names.Contains(parameterSymbol))
+                {
+                    lambdaData.SingleLambdaUnderscoreUnused();
+                }
             }
         }
 
@@ -242,42 +249,37 @@ namespace UnderscoreLambdasGithub
     class Data
     {
         public int TotalSingleLambdasCount { get; private set; }
-        public int TotalMultiLambdasCount { get; private set; }
-
-        public Dictionary<string, int> SingleLambdas { get; } = new Dictionary<string, int>();
-        public Dictionary<string, int> MultiLambdasOneParameter { get; } = new Dictionary<string, int>();
-        public Dictionary<string, int> MultiLambdasMultiParameters { get; } = new Dictionary<string, int>();
-
         public void SingleLambda() => TotalSingleLambdasCount++;
+
+        public int TotalSingleLambdaUnderscoreCount { get; private set; }
+        public void SingleLambdaUnderscore() => TotalSingleLambdaUnderscoreCount++;
+
+        public int TotalSingleLambdaUnderscoreUnusedCount { get; private set; }
+        public void SingleLambdaUnderscoreUnused() => TotalSingleLambdaUnderscoreUnusedCount++;
+
+        public int TotalMultiLambdasCount { get; private set; }
         public void MultiLambda() => TotalMultiLambdasCount++;
 
-        private static void Increment<T>(Dictionary<T, int> dictionary, T key, int added = 1)
-        {
-            int value;
-            dictionary.TryGetValue(key, out value);
-            dictionary[key] = value + added;
-        }
+        public int TotalMultiLambdaUnderscoreCount { get; private set; }
+        public void MultiLambdaUnderscore() => TotalMultiLambdaUnderscoreCount++;
 
-        public void SingleLambdaUnused(string name) => Increment(SingleLambdas, name);
-        public void MultiLambdaOneUnused(string name) => Increment(MultiLambdasOneParameter, name);
-        public void MultiLambdaMultiUnused(string name) => Increment(MultiLambdasMultiParameters, name);
+        public int TotalMultiLambdaUnderscoreUnusedCount { get; private set; }
+        public void MultiLambdaUnderscoreUnused() => TotalMultiLambdaUnderscoreUnusedCount++;
 
-        private static void Add(Dictionary<string, int> thisDictionary, Dictionary<string, int> otherDictionary)
-        {
-            foreach (var kvp in otherDictionary)
-            {
-                Increment(thisDictionary, kvp.Key, kvp.Value);
-            }
-        }
+        public int TotalOtherUnderscoresCount { get; private set; }
+        public void OtherUnderscore() => TotalOtherUnderscoresCount++;
 
         public void Add(Data other)
         {
             this.TotalSingleLambdasCount += other.TotalSingleLambdasCount;
-            this.TotalMultiLambdasCount += other.TotalMultiLambdasCount;
+            this.TotalSingleLambdaUnderscoreCount += other.TotalSingleLambdaUnderscoreCount;
+            this.TotalSingleLambdaUnderscoreUnusedCount += other.TotalSingleLambdaUnderscoreUnusedCount;
 
-            Add(this.SingleLambdas, other.SingleLambdas);
-            Add(this.MultiLambdasOneParameter, other.MultiLambdasOneParameter);
-            Add(this.MultiLambdasMultiParameters, other.MultiLambdasMultiParameters);
+            this.TotalMultiLambdasCount += other.TotalMultiLambdasCount;
+            this.TotalMultiLambdaUnderscoreCount += other.TotalMultiLambdaUnderscoreCount;
+            this.TotalMultiLambdaUnderscoreUnusedCount += other.TotalMultiLambdaUnderscoreUnusedCount;
+
+            this.TotalOtherUnderscoresCount += other.TotalOtherUnderscoresCount;
         }
     }
 }
