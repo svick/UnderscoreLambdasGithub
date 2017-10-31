@@ -60,9 +60,18 @@ namespace UnderscoreLambdasGithub
             Console.WriteLine();
         }
 
-        private static void Print(Data data)
+        private static void Print(Data lambdaData)
         {
-            Print(data.Joins);
+            Console.WriteLine($"single lambdas: {lambdaData.TotalSingleLambdasCount}, multi lambdas: {lambdaData.TotalMultiLambdasCount}");
+
+            Console.WriteLine("Single lambdas:");
+            Print(lambdaData.SingleLambdas);
+
+            Console.WriteLine("Multi lambdas, one parameter:");
+            Print(lambdaData.MultiLambdasOneParameter);
+
+            Console.WriteLine("Multi lambdas, multi parameters:");
+            Print(lambdaData.MultiLambdasMultiParameters);
         }
 
         private static void Print(Dictionary<string, int> dictionary)
@@ -113,39 +122,71 @@ namespace UnderscoreLambdasGithub
             var syntaxTree = CSharpSyntaxTree.ParseText(SourceText.From(File.OpenRead(file)));
             var semanticModel = CSharpCompilation.Create(null)
                 .AddSyntaxTrees(syntaxTree)
-                .AddReferences(MetadataReference.CreateFromFile(typeof(object).GetTypeInfo().Assembly.Location))
                 .GetSemanticModel(syntaxTree);
 
-            var invocations = syntaxTree.GetCompilationUnitRoot().DescendantNodes().OfType<InvocationExpressionSyntax>();
+            var lambdas = syntaxTree.GetCompilationUnitRoot().DescendantNodes().OfType<LambdaExpressionSyntax>();
 
-            foreach (var invocation in invocations)
+            foreach (var lambda in lambdas)
             {
-                if (invocation.ToString().Contains("Join"))
+                var names = lambda.DescendantNodes().OfType<NameSyntax>().Select(name => semanticModel.GetSymbolInfo(name).Symbol).Where(s => s != null).ToList();
+
+                if (lambda is SimpleLambdaExpressionSyntax simpleLambda)
                 {
-                    //Console.WriteLine(file.Substring(BasePath.Length) + ':');
-                    Console.WriteLine(invocation);
+                    var paramaterSymbol = semanticModel.GetDeclaredSymbol(simpleLambda.Parameter);
+
+                    SingleLambda(data, names, paramaterSymbol);
                 }
 
-                var symbolInfo = semanticModel.GetSymbolInfo(invocation.Expression);
-                IEnumerable<ISymbol> symbols = symbolInfo.CandidateSymbols;
-                if (symbolInfo.Symbol != null)
-                    symbols = symbols.Prepend(symbolInfo.Symbol);
+                if (lambda is ParenthesizedLambdaExpressionSyntax complexLambda)
+                {
+                    var parameterSymbols = complexLambda.ParameterList.Parameters
+                        .Select(param => semanticModel.GetDeclaredSymbol(param))
+                        .ToList();
 
-                if (!symbols.Any(s => s.ContainingType?.SpecialType == SpecialType.System_String && s.Name == "Join"))
-                    continue;
-
-                var firstParameterLiteral = invocation.ArgumentList.Arguments[0].Expression as LiteralExpressionSyntax;
-
-                if (firstParameterLiteral == null)
-                    continue;
-
-                var firstParameterValue = firstParameterLiteral.Token.ValueText;
-
-                Console.WriteLine($"Found '{firstParameterValue}'");
-                data.Join(firstParameterValue);
+                    if (parameterSymbols.Count == 1)
+                    {
+                        SingleLambda(data, names, parameterSymbols.Single());
+                    }
+                    else
+                    {
+                        MultiLambda(data, names, parameterSymbols);
+                    }
+                }
             }
 
             return data;
+        }
+
+        private static void MultiLambda(Data lambdaData, List<ISymbol> names, List<IParameterSymbol> parameterSymbols)
+        {
+            lambdaData.MultiLambda();
+
+            var missingSymbols =
+            (from parameterSymbol in parameterSymbols
+                where !names.Contains(parameterSymbol)
+                select parameterSymbol.Name).ToList();
+
+            switch (missingSymbols.Count)
+            {
+                case 0:
+                    break;
+                case 1:
+                    lambdaData.MultiLambdaOneUnused(missingSymbols.Single());
+                    break;
+                default:
+                    lambdaData.MultiLambdaMultiUnused(string.Join(", ", missingSymbols));
+                    break;
+            }
+        }
+
+        private static void SingleLambda(Data lambdaData, List<ISymbol> names, IParameterSymbol parameterSymbol)
+        {
+            lambdaData.SingleLambda();
+
+            if (!names.Contains(parameterSymbol))
+            {
+                lambdaData.SingleLambdaUnused(parameterSymbol.Name);
+            }
         }
 
         private static IEnumerable<string> GetFiles(string path)
@@ -200,16 +241,26 @@ namespace UnderscoreLambdasGithub
 
     class Data
     {
-        public Dictionary<string, int> Joins { get; } = new Dictionary<string, int>();
+        public int TotalSingleLambdasCount { get; private set; }
+        public int TotalMultiLambdasCount { get; private set; }
 
-        public static void Increment<T>(Dictionary<T, int> dictionary, T key, int added = 1)
+        public Dictionary<string, int> SingleLambdas { get; } = new Dictionary<string, int>();
+        public Dictionary<string, int> MultiLambdasOneParameter { get; } = new Dictionary<string, int>();
+        public Dictionary<string, int> MultiLambdasMultiParameters { get; } = new Dictionary<string, int>();
+
+        public void SingleLambda() => TotalSingleLambdasCount++;
+        public void MultiLambda() => TotalMultiLambdasCount++;
+
+        private static void Increment<T>(Dictionary<T, int> dictionary, T key, int added = 1)
         {
             int value;
             dictionary.TryGetValue(key, out value);
             dictionary[key] = value + added;
         }
 
-        public void Join(string separator) => Increment(Joins, separator);
+        public void SingleLambdaUnused(string name) => Increment(SingleLambdas, name);
+        public void MultiLambdaOneUnused(string name) => Increment(MultiLambdasOneParameter, name);
+        public void MultiLambdaMultiUnused(string name) => Increment(MultiLambdasMultiParameters, name);
 
         private static void Add(Dictionary<string, int> thisDictionary, Dictionary<string, int> otherDictionary)
         {
@@ -221,7 +272,12 @@ namespace UnderscoreLambdasGithub
 
         public void Add(Data other)
         {
-            Add(this.Joins, other.Joins);
+            this.TotalSingleLambdasCount += other.TotalSingleLambdasCount;
+            this.TotalMultiLambdasCount += other.TotalMultiLambdasCount;
+
+            Add(this.SingleLambdas, other.SingleLambdas);
+            Add(this.MultiLambdasOneParameter, other.MultiLambdasOneParameter);
+            Add(this.MultiLambdasMultiParameters, other.MultiLambdasMultiParameters);
         }
     }
 }
