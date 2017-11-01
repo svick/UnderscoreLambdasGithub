@@ -15,7 +15,7 @@ using Newtonsoft.Json;
 
 namespace UnderscoreLambdasGithub
 {
-    public class Program
+    public static class Program
     {
         public static void Main()
         {
@@ -48,6 +48,9 @@ namespace UnderscoreLambdasGithub
 
             var sendDataTask = SendData(cloneBlock);
 
+            //getFilesBlock.SendAsync(BasePath).Wait();
+            //cloneBlock.Complete();
+
             summarizeBlock.Completion.Wait();
 
             sendDataTask.Wait();
@@ -71,6 +74,7 @@ namespace UnderscoreLambdasGithub
             Console.WriteLine($"Underscore unused: {lambdaData.TotalMultiLambdaUnderscoreUnusedCount}");
             Console.WriteLine();
 
+            Console.WriteLine($"Discard: {lambdaData.TotalDiscardsCount}");
             Console.WriteLine($"Other underscore: {lambdaData.TotalOtherUnderscoresCount}");
         }
 
@@ -93,7 +97,12 @@ namespace UnderscoreLambdasGithub
 
             var data = new Data();
 
-            var syntaxTree = CSharpSyntaxTree.ParseText(SourceText.From(File.OpenRead(file)));
+            var syntaxTree = CSharpSyntaxTree.ParseText(SourceText.From(File.OpenRead(file))).WithFilePath(file.Substring(BasePath.Length));
+
+            // that many syntax errors means it's not a C# file
+            if (syntaxTree.GetDiagnostics().Count() > 100)
+                return data;
+
             var semanticModel = CSharpCompilation.Create(null)
                 .AddSyntaxTrees(syntaxTree)
                 .GetSemanticModel(syntaxTree);
@@ -112,6 +121,8 @@ namespace UnderscoreLambdasGithub
                     var paramaterSymbol = semanticModel.GetDeclaredSymbol(simpleLambda.Parameter);
 
                     SingleLambda(data, names, paramaterSymbol);
+
+                    handledUnderscores.Add(paramaterSymbol);
                 }
 
                 if (lambda is ParenthesizedLambdaExpressionSyntax complexLambda)
@@ -128,6 +139,8 @@ namespace UnderscoreLambdasGithub
                     {
                         MultiLambda(data, names, parameterSymbols);
                     }
+
+                    handledUnderscores.UnionWith(parameterSymbols);
                 }
             }
 
@@ -138,14 +151,17 @@ namespace UnderscoreLambdasGithub
 
                 if (name.ToString() == "_")
                 {
-                    Print(name.Parent);
-
                     var symbol = semanticModel.GetSymbolInfo(name).Symbol;
 
-                    if (handledUnderscores.Add(symbol))
+                    if (symbol is IDiscardSymbol)
                     {
+                        data.Discard();
+                    }
+                    else if (handledUnderscores.Add(symbol))
+                    {
+                        Print(name.Parent);
+
                         data.OtherUnderscore();
-                        break;
                     }
                 }
             }
@@ -160,7 +176,7 @@ namespace UnderscoreLambdasGithub
             var toPrint = ancestors.OfType<StatementSyntax>().FirstOrDefault() ??
                           ancestors.OfType<ExpressionSyntax>().LastOrDefault() ?? node;
 
-            Console.WriteLine(toPrint);
+            Console.WriteLine($"{node.SyntaxTree.FilePath}: {toPrint}");
 
             File.AppendAllLines(@"C:\temp\UnderscoreLambdasGithub\other.txt", new[] {toPrint.ToString()});
         }
@@ -211,7 +227,7 @@ namespace UnderscoreLambdasGithub
 
         private static string Clone(string repo)
         {
-            Console.WriteLine($"{Interlocked.Increment(ref i)} {repo}");
+            Console.WriteLine($"{Interlocked.Increment(ref i)}/{Repos.Length} {repo}");
 
             string gitUrl = $"https://github.com/{repo}.git";
             string path = Path.Combine(BasePath, repo.Replace('/', ' '));
@@ -269,6 +285,9 @@ namespace UnderscoreLambdasGithub
         public int TotalOtherUnderscoresCount { get; private set; }
         public void OtherUnderscore() => TotalOtherUnderscoresCount++;
 
+        public int TotalDiscardsCount { get; private set; }
+        public void Discard() => TotalDiscardsCount++;
+
         public void Add(Data other)
         {
             this.TotalSingleLambdasCount += other.TotalSingleLambdasCount;
@@ -280,6 +299,7 @@ namespace UnderscoreLambdasGithub
             this.TotalMultiLambdaUnderscoreUnusedCount += other.TotalMultiLambdaUnderscoreUnusedCount;
 
             this.TotalOtherUnderscoresCount += other.TotalOtherUnderscoresCount;
+            this.TotalDiscardsCount += other.TotalDiscardsCount;
         }
     }
 }
