@@ -178,7 +178,8 @@ namespace UnderscoreLambdasGithub
 
             Console.WriteLine($"{node.SyntaxTree.FilePath}: {toPrint}");
 
-            File.AppendAllLines(@"C:\temp\UnderscoreLambdasGithub\other.txt", new[] {toPrint.ToString()});
+            File.AppendAllLines(
+                @"C:\temp\UnderscoreLambdasGithub\other.txt", new[] {node.SyntaxTree.FilePath, toPrint.ToFullString()});
         }
 
         private static void MultiLambda(Data lambdaData, List<ISymbol> names, List<IParameterSymbol> parameterSymbols)
