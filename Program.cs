@@ -21,7 +21,13 @@ namespace UnderscoreLambdasGithub
     {
         public static void Main()
         {
-            Repos = GetRepos().Distinct().Take(10000).ToArray().Wait();
+            int i = 0;
+            Repos = GetRepos().Distinct().Take(10000).Do(
+                _ =>
+                {
+                    if (++i % 100 == 0)
+                        Console.WriteLine($"Repos: {i}");
+                }).ToArray().Wait();
 
             Console.WriteLine($"{Repos.Length} repos");
             return;
@@ -246,37 +252,14 @@ namespace UnderscoreLambdasGithub
 
         private static string[] Repos;
 
-        static IObservable<string> GetRepos()
-        {
-            var repoNamesObservable = Observable.Create<IObservable<string>>(
-                async o =>
-                {
-                    DateTime start = DateTime.UtcNow;
+        static IObservable<string> GetRepos() => Observable.Repeat(DateTime.UtcNow).Select(GetRepos).Concat();
 
-                    while (true)
-                    {
-                        var (repoNames, nextStartTask) = GetRepos(start);
-
-                        o.OnNext(repoNames);
-
-                        start = await nextStartTask;
-                    }
-                });
-
-            return repoNamesObservable.Merge();
-        }
-
-        static (IObservable<string> repoNames, Task<DateTime> nextStart) GetRepos(DateTime start)
-        {
-            var nextStartTcs = new TaskCompletionSource<DateTime>();
-
-            var repoNamesObservable = Observable.Create<string>(async o =>
+        static IObservable<string> GetRepos(DateTime start) => Observable.Create<string>(
+            async o =>
             {
                 var client = new HttpClient();
 
                 client.DefaultRequestHeaders.UserAgent.ParseAdd("gsvick at gmail.com");
-
-                DateTime lastModified = start;
 
                 for (int i = 1; i <= 10; i++)
                 {
@@ -289,7 +272,16 @@ namespace UnderscoreLambdasGithub
 
                             Console.WriteLine($"start: {start:s}; page: {i}");
 
-                            var response = await client.GetAsync(url);
+                            HttpResponseMessage response;
+                            try
+                            {
+                                response = await client.GetAsync(url);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                Console.WriteLine("Timeout, retrying.");
+                                continue;
+                            }
 
                             if (response.StatusCode == HttpStatusCode.Forbidden)
                             {
@@ -315,47 +307,23 @@ namespace UnderscoreLambdasGithub
                         }
                     }
 
-                    again:
-
-                    bool first = true;
-
                     var data = await GetData();
+
+                    bool incomplete = data.incomplete_results;
+
+                    if (!incomplete)
+                        throw new Exception(
+                            "The code currently relies on getting 'random' data. If GH starts giving correct results, this code will break.");
 
                     foreach (var repo in data.items)
                     {
-                        DateTime pushed = repo.pushed_at;
-
-                        if (first)
-                        {
-                            if (start - pushed > TimeSpan.FromDays(1))
-                            {
-                                Console.WriteLine($"Got bogus data ({pushed:s}), try again.");
-                                goto again;
-                            }
-
-                            first = false;
-                        }
-
-                        //T Max<T>(T value1, T value2) where T : IComparable<T> =>
-                        //    value1.CompareTo(value2) > 0 ? value1 : value2;
-
                         string repoName = repo.full_name;
                         o.OnNext(repoName);
-
-                        lastModified = pushed;
                     }
                 }
 
                 o.OnCompleted();
-
-                if (start - lastModified > TimeSpan.FromDays(1))
-                    throw new Exception();
-
-                nextStartTcs.SetResult(lastModified);
             });
-
-            return (repoNamesObservable, nextStartTcs.Task);
-        }
     }
 
     class Data
