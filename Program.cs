@@ -154,7 +154,7 @@ namespace UnderscoreLambdasGithub
             foreach (var name in root.DescendantNodes().OfType<NameSyntax>())
             {
                 var nameString = name.ToString();
-                if (nameString.All(c => c == '_'))
+                if (nameString.Length > 0 && nameString.All(c => c == '_'))
                 {
                     var symbol = semanticModel.GetSymbolInfo(name).Symbol;
 
@@ -196,7 +196,7 @@ namespace UnderscoreLambdasGithub
         {
             lambdaData.MultiLambda();
 
-            var underscoreParameters = parameterSymbols.Where(s => s.Name.All(c => c == '_'));
+            var underscoreParameters = parameterSymbols.Where(s => s.Name.Length > 0 && s.Name.All(c => c == '_'));
 
             foreach (var underscoreParameter in underscoreParameters)
             {
@@ -235,7 +235,9 @@ namespace UnderscoreLambdasGithub
         {
             lambdaData.SingleLambda();
 
-            if (parameterSymbol.Name == "_")
+            var symbolName = parameterSymbol.Name;
+
+            if (symbolName == "_")
             {
                 lambdaData.SingleLambdaUnderscore();
 
@@ -244,7 +246,7 @@ namespace UnderscoreLambdasGithub
                     lambdaData.SingleLambdaUnderscoreUnused();
                 }
             }
-            else if (parameterSymbol.Name.All(c => c == '_'))
+            else if (symbolName.Length > 0 && symbolName.All(c => c == '_'))
             {
                 lambdaData.SingleLambdaMultiUnderscore();
 
