@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -19,9 +21,10 @@ namespace UnderscoreLambdasGithub
     {
         public static void Main()
         {
-            Repos = GetRepos(10).Distinct().ToArray();
+            Repos = GetRepos().Distinct().Take(10000).ToArray().Wait();
 
             Console.WriteLine($"{Repos.Length} repos");
+            return;
 
             var commonOptions = new ExecutionDataflowBlockOptions { BoundedCapacity = 1 };
             var parallelOptions = new ExecutionDataflowBlockOptions
@@ -243,23 +246,115 @@ namespace UnderscoreLambdasGithub
 
         private static string[] Repos;
 
-        static IEnumerable<string> GetRepos(int pages)
+        static IObservable<string> GetRepos()
         {
-            var client = new HttpClient();
-
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("gsvick at gmail.com");
-
-            for (int i = 1; i <= pages; i++)
-            {
-                var jsonString = client.GetStringAsync(
-                    $"https://api.github.com/search/repositories?q=language:csharp+stars:%3C=100&sort=updated&per_page=100&page={i}").Result;
-
-                dynamic data = JsonConvert.DeserializeObject(jsonString);
-                foreach (var repo in data.items)
+            var repoNamesObservable = Observable.Create<IObservable<string>>(
+                async o =>
                 {
-                    yield return repo.full_name;
+                    DateTime start = DateTime.UtcNow;
+
+                    while (true)
+                    {
+                        var (repoNames, nextStartTask) = GetRepos(start);
+
+                        o.OnNext(repoNames);
+
+                        start = await nextStartTask;
+                    }
+                });
+
+            return repoNamesObservable.Merge();
+        }
+
+        static (IObservable<string> repoNames, Task<DateTime> nextStart) GetRepos(DateTime start)
+        {
+            var nextStartTcs = new TaskCompletionSource<DateTime>();
+
+            var repoNamesObservable = Observable.Create<string>(async o =>
+            {
+                var client = new HttpClient();
+
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("gsvick at gmail.com");
+
+                DateTime lastModified = start;
+
+                for (int i = 1; i <= 10; i++)
+                {
+                    async Task<dynamic> GetData()
+                    {
+                        while (true)
+                        {
+                            string url =
+                                $"https://api.github.com/search/repositories?q=language:csharp+stars:%3C=100+pushed:%3C={start:s}&sort=updated&per_page=100&page={i}";
+
+                            Console.WriteLine($"start: {start:s}; page: {i}");
+
+                            var response = await client.GetAsync(url);
+
+                            if (response.StatusCode == HttpStatusCode.Forbidden)
+                            {
+                                var waitUntilTimestamp = response.Headers.GetValues("X-RateLimit-Reset").Single();
+
+                                var waitUntil = DateTimeOffset.FromUnixTimeSeconds(long.Parse(waitUntilTimestamp));
+
+                                var waitTime = waitUntil - DateTimeOffset.UtcNow;
+
+                                Console.WriteLine($"403, waiting for {waitTime.TotalSeconds:F2} s.");
+
+                                if (waitTime > TimeSpan.Zero)
+                                    await Task.Delay(waitTime);
+
+                                continue;
+                            }
+
+                            var jsonString = await response.Content.ReadAsStringAsync();
+
+                            response.EnsureSuccessStatusCode();
+
+                            return JsonConvert.DeserializeObject(jsonString);
+                        }
+                    }
+
+                    again:
+
+                    bool first = true;
+
+                    var data = await GetData();
+
+                    foreach (var repo in data.items)
+                    {
+                        DateTime pushed = repo.pushed_at;
+
+                        if (first)
+                        {
+                            if (start - pushed > TimeSpan.FromDays(1))
+                            {
+                                Console.WriteLine($"Got bogus data ({pushed:s}), try again.");
+                                goto again;
+                            }
+
+                            first = false;
+                        }
+
+                        //T Max<T>(T value1, T value2) where T : IComparable<T> =>
+                        //    value1.CompareTo(value2) > 0 ? value1 : value2;
+
+                        string repoName = repo.full_name;
+                        o.OnNext(repoName);
+
+                        lastModified = pushed;
+                    }
                 }
-            }
+
+                o.OnCompleted();
+
+                if (start - lastModified > TimeSpan.FromDays(1))
+                    throw new Exception();
+
+                nextStartTcs.SetResult(lastModified);
+            });
+
+            return (repoNamesObservable, nextStartTcs.Task);
         }
     }
 
