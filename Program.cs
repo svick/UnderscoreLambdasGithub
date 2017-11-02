@@ -252,78 +252,114 @@ namespace UnderscoreLambdasGithub
 
         private static string[] Repos;
 
-        static IObservable<string> GetRepos() => Observable.Repeat(DateTime.UtcNow).Select(GetRepos).Concat();
-
-        static IObservable<string> GetRepos(DateTime start) => Observable.Create<string>(
-            async o =>
-            {
-                var client = new HttpClient();
-
-                client.DefaultRequestHeaders.UserAgent.ParseAdd("gsvick at gmail.com");
-
-                for (int i = 1; i <= 10; i++)
+        static IObservable<string> GetRepos()
+        {
+            var repoNamesObservable = Observable.Create<IObservable<string>>(
+                async o =>
                 {
-                    async Task<dynamic> GetData()
+                    DateTime start = DateTime.UtcNow;
+
+                    while (true)
                     {
-                        while (true)
+                        var (repoNames, nextStartTask) = GetRepos(start);
+
+                        o.OnNext(repoNames);
+
+                        start = await nextStartTask;
+                    }
+                });
+
+            return repoNamesObservable.Concat();
+        }
+
+        static (IObservable<string> repoNames, Task<DateTime> nextStart) GetRepos(DateTime start)
+        {
+            var nextStartTcs = new TaskCompletionSource<DateTime>();
+
+            var repoNamesObservable = Observable.Create<string>(
+                async o =>
+                {
+                    var client = new HttpClient();
+
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd("gsvick at gmail.com");
+
+                    DateTime nextStart = start;
+
+                    for (int i = 1; i <= 10; i++)
+                    {
+                        async Task<dynamic> GetData()
                         {
-                            string url =
-                                $"https://api.github.com/search/repositories?q=language:csharp+stars:%3C=100+pushed:%3C={start:s}&sort=updated&per_page=100&page={i}";
-
-                            Console.WriteLine($"start: {start:s}; page: {i}");
-
-                            HttpResponseMessage response;
-                            try
+                            while (true)
                             {
-                                response = await client.GetAsync(url);
+                                string url =
+                                    $"https://api.github.com/search/repositories?q=language:csharp+stars:%3C=100+pushed:%3C={start:s}&sort=updated&per_page=100&page={i}";
+
+                                Console.WriteLine($"start: {start:s}; page: {i}");
+
+                                HttpResponseMessage response;
+                                try
+                                {
+                                    response = await client.GetAsync(url);
+                                }
+                                catch (OperationCanceledException)
+                                {
+                                    Console.WriteLine("Timeout, retrying.");
+                                    continue;
+                                }
+
+                                if (response.StatusCode == HttpStatusCode.Forbidden)
+                                {
+                                    var waitUntilTimestamp = response.Headers.GetValues("X-RateLimit-Reset").Single();
+
+                                    var waitUntil = DateTimeOffset.FromUnixTimeSeconds(long.Parse(waitUntilTimestamp));
+
+                                    var waitTime = waitUntil - DateTimeOffset.UtcNow;
+
+                                    Console.WriteLine($"403, waiting for {waitTime.TotalSeconds:F2} s.");
+
+                                    if (waitTime > TimeSpan.Zero)
+                                        await Task.Delay(waitTime);
+
+                                    continue;
+                                }
+
+                                var jsonString = await response.Content.ReadAsStringAsync();
+
+                                response.EnsureSuccessStatusCode();
+
+                                return JsonConvert.DeserializeObject(jsonString);
                             }
-                            catch (OperationCanceledException)
-                            {
-                                Console.WriteLine("Timeout, retrying.");
-                                continue;
-                            }
-
-                            if (response.StatusCode == HttpStatusCode.Forbidden)
-                            {
-                                var waitUntilTimestamp = response.Headers.GetValues("X-RateLimit-Reset").Single();
-
-                                var waitUntil = DateTimeOffset.FromUnixTimeSeconds(long.Parse(waitUntilTimestamp));
-
-                                var waitTime = waitUntil - DateTimeOffset.UtcNow;
-
-                                Console.WriteLine($"403, waiting for {waitTime.TotalSeconds:F2} s.");
-
-                                if (waitTime > TimeSpan.Zero)
-                                    await Task.Delay(waitTime);
-
-                                continue;
-                            }
-
-                            var jsonString = await response.Content.ReadAsStringAsync();
-
-                            response.EnsureSuccessStatusCode();
-
-                            return JsonConvert.DeserializeObject(jsonString);
                         }
+
+                        var data = await GetData();
+
+                        bool incomplete = data.incomplete_results;
+
+                        foreach (var repo in data.items)
+                        {
+                            string repoName = repo.full_name;
+                            o.OnNext(repoName);
+
+                            // if it's incomplete, we got "random" repos, so don't change nextStart
+                            // if it's complete, nextStart has to move
+                            if (!incomplete)
+                            {
+                                DateTime pushed = repo.pushed_at;
+                                nextStart = pushed;
+                            }
+                        }
+
+                        if (!incomplete)
+                            Console.WriteLine($"Got complete data, moving start to {nextStart:s}.");
                     }
 
-                    var data = await GetData();
+                    o.OnCompleted();
 
-                    bool incomplete = data.incomplete_results;
+                    nextStartTcs.SetResult(nextStart);
+                });
 
-                    if (!incomplete)
-                        throw new Exception(
-                            "The code currently relies on getting 'random' data. If GH starts giving correct results, this code will break.");
-
-                    foreach (var repo in data.items)
-                    {
-                        string repoName = repo.full_name;
-                        o.OnNext(repoName);
-                    }
-                }
-
-                o.OnCompleted();
-            });
+            return (repoNamesObservable, nextStartTcs.Task);
+        }
     }
 
     class Data
