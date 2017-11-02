@@ -20,7 +20,7 @@ namespace UnderscoreLambdasGithub
 {
     public static class Program
     {
-        private const int ReposCount = 5;
+        private const int ReposCount = 10000;
 
         public static void Main()
         {
@@ -29,7 +29,7 @@ namespace UnderscoreLambdasGithub
                 _ =>
                 {
                     if (++i % 100 == 0)
-                        Console.WriteLine($"Repos: {i}");
+                        Console.Error.WriteLine($"Repos: {i}");
                 });
 
             var commonOptions = new ExecutionDataflowBlockOptions { BoundedCapacity = 1 };
@@ -62,8 +62,6 @@ namespace UnderscoreLambdasGithub
             summarizeBlock.Completion.Wait();
 
             Print(dataSummary);
-
-            Console.WriteLine();
         }
 
         private static void Print(Data lambdaData)
@@ -179,10 +177,8 @@ namespace UnderscoreLambdasGithub
             var toPrint = ancestors.OfType<StatementSyntax>().FirstOrDefault() ??
                           ancestors.OfType<ExpressionSyntax>().LastOrDefault() ?? node;
 
-            Console.WriteLine($"{node.SyntaxTree.FilePath}: {toPrint}");
-
-            File.AppendAllLines(
-                @"C:\temp\UnderscoreLambdasGithub\other.txt", new[] {node.SyntaxTree.FilePath, toPrint.ToFullString()});
+            Console.WriteLine(node.SyntaxTree.FilePath);
+            Console.WriteLine(toPrint.ToFullString());
         }
 
         private static void MultiLambda(Data lambdaData, List<ISymbol> names, List<IParameterSymbol> parameterSymbols)
@@ -255,18 +251,17 @@ namespace UnderscoreLambdasGithub
 
         private static string Clone(string repo)
         {
-            Console.WriteLine($"{Interlocked.Increment(ref i)}/{ReposCount} {repo}");
+            Console.Error.WriteLine($"{Interlocked.Increment(ref i)}/{ReposCount} {repo}");
 
             string gitUrl = $"https://github.com/{repo}.git";
             string path = Path.Combine(BasePath, repo.Replace('/', ' '));
 
             if (Directory.Exists(path))
-                Console.WriteLine($"Directory for {repo} already exists.");
+                Console.Error.WriteLine($"Directory for {repo} already exists.");
             else
                 Process.Start(
                     new ProcessStartInfo("git", $"clone {gitUrl} \"{path}\" --depth 1")
                     {
-                        //RedirectStandardOutput = true,
                         RedirectStandardError = true
                     }).WaitForExit();
 
@@ -290,7 +285,7 @@ namespace UnderscoreLambdasGithub
 
                         if (ct.IsCancellationRequested)
                         {
-                            Console.WriteLine("Got enough sets of repos, cancelling.");
+                            Console.Error.WriteLine("Got enough sets of repos, cancelling.");
                             ct.ThrowIfCancellationRequested();
                         }
 
@@ -322,14 +317,14 @@ namespace UnderscoreLambdasGithub
                             {
                                 if (ct.IsCancellationRequested)
                                 {
-                                    Console.WriteLine("Got enough repos, cancelling.");
+                                    Console.Error.WriteLine("Got enough repos, cancelling.");
                                     ct.ThrowIfCancellationRequested();
                                 }
 
                                 string url =
                                     $"https://api.github.com/search/repositories?q=language:csharp+stars:%3C=100+pushed:%3C={start:s}&sort=updated&per_page=100&page={i}";
 
-                                Console.WriteLine($"start: {start:s}; page: {i}");
+                                Console.Error.WriteLine($"start: {start:s}; page: {i}");
 
                                 HttpResponseMessage response;
                                 try
@@ -338,7 +333,7 @@ namespace UnderscoreLambdasGithub
                                 }
                                 catch (OperationCanceledException)
                                 {
-                                    Console.WriteLine("Timeout, retrying.");
+                                    Console.Error.WriteLine("Timeout, retrying.");
                                     continue;
                                 }
 
@@ -350,7 +345,7 @@ namespace UnderscoreLambdasGithub
 
                                     var waitTime = waitUntil - DateTimeOffset.UtcNow;
 
-                                    Console.WriteLine($"403, waiting for {waitTime.TotalSeconds:F2} s.");
+                                    Console.Error.WriteLine($"403, waiting for {waitTime.TotalSeconds:F2} s.");
 
                                     if (waitTime > TimeSpan.Zero)
                                         await Task.Delay(waitTime, ct);
@@ -385,7 +380,7 @@ namespace UnderscoreLambdasGithub
                         }
 
                         if (!incomplete)
-                            Console.WriteLine($"Got complete data, moving start to {nextStart:s}.");
+                            Console.Error.WriteLine($"Got complete data, moving start to {nextStart:s}.");
                     }
 
                     o.OnCompleted();
