@@ -268,8 +268,6 @@ namespace UnderscoreLambdasGithub
             return path;
         }
 
-        private static string[] Repos;
-
         static IObservable<string> GetRepos()
         {
             var repoNamesObservable = Observable.Create<IObservable<string>>(
