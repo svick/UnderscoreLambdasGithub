@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,18 +20,17 @@ namespace UnderscoreLambdasGithub
 {
     public static class Program
     {
+        private const int ReposCount = 5;
+
         public static void Main()
         {
             int i = 0;
-            Repos = GetRepos().Distinct().Take(10000).Do(
+            var repos = GetRepos().Distinct().Take(ReposCount).Do(
                 _ =>
                 {
                     if (++i % 100 == 0)
                         Console.WriteLine($"Repos: {i}");
-                }).ToArray().Wait();
-
-            Console.WriteLine($"{Repos.Length} repos");
-            return;
+                });
 
             var commonOptions = new ExecutionDataflowBlockOptions { BoundedCapacity = 1 };
             var parallelOptions = new ExecutionDataflowBlockOptions
@@ -42,27 +42,24 @@ namespace UnderscoreLambdasGithub
 
             var cloneBlock = new TransformBlock<string, string>(repo => Clone(repo), parallelOptions);
 
-            var getFilesBlock = new TransformManyBlock<string, string>(path => GetFiles(path), commonOptions);
+            var getFilesBlock = new TransformManyBlock<string, (string, IDisposable)>(path => GetFiles(path), commonOptions);
 
-            var parseBlock = new TransformBlock<string, Data>(file => Parse(file), commonOptions);
+            var parseBlock = new TransformBlock<(string, IDisposable), Data>(tuple => Parse(tuple.Item1, tuple.Item2), commonOptions);
 
             Data dataSummary = new Data();
             var summarizeBlock = new ActionBlock<Data>(ld => dataSummary.Add(ld));
 
             var linkOptions = new DataflowLinkOptions { PropagateCompletion = true };
 
+            repos.Subscribe(cloneBlock.AsObserver());
             cloneBlock.LinkTo(getFilesBlock, linkOptions);
             getFilesBlock.LinkTo(parseBlock, linkOptions);
             parseBlock.LinkTo(summarizeBlock, linkOptions);
-
-            var sendDataTask = SendData(cloneBlock);
 
             //getFilesBlock.SendAsync(BasePath).Wait();
             //cloneBlock.Complete();
 
             summarizeBlock.Completion.Wait();
-
-            sendDataTask.Wait();
 
             Print(dataSummary);
 
@@ -87,26 +84,21 @@ namespace UnderscoreLambdasGithub
             Console.WriteLine($"Other underscore: {lambdaData.TotalOtherUnderscoresCount}");
         }
 
-        //private static readonly string BasePath = @"C:\Users\Svick\AppData\Local\Temp\UnderscoreLambdasGithub\";
-        private static readonly string BasePath = @"C:\Temp\UnderscoreLambdasGithub\";
+        private static readonly string BasePath = Path.Combine(Environment.CurrentDirectory, "../UnderscoreLambdasGithubData");
 
-        private static async Task SendData(ITargetBlock<string> targetBlock)
-        {
-            foreach (var repo in Repos ?? new string[0])
-            {
-                await targetBlock.SendAsync(repo);
-            }
-
-            targetBlock.Complete();
-        }
-
-        private static Data Parse(string file)
+        private static Data Parse(string file, IDisposable disposable)
         {
             //Console.WriteLine($"Parsing {file.Substring(BasePath.Length)}.");
 
             var data = new Data();
 
-            var syntaxTree = CSharpSyntaxTree.ParseText(SourceText.From(File.OpenRead(file))).WithFilePath(file.Substring(BasePath.Length));
+            SyntaxTree syntaxTree;
+
+            using (var fileStream = File.OpenRead(file))
+            {
+                syntaxTree = CSharpSyntaxTree.ParseText(SourceText.From(fileStream))
+                    .WithFilePath(file.Substring(BasePath.Length));
+            }
 
             // that many syntax errors means it's not a C# file
             if (syntaxTree.GetDiagnostics().Count() > 100)
@@ -175,6 +167,8 @@ namespace UnderscoreLambdasGithub
                 }
             }
 
+            disposable.Dispose();
+
             return data;
         }
 
@@ -222,22 +216,46 @@ namespace UnderscoreLambdasGithub
             }
         }
 
-        private static IEnumerable<string> GetFiles(string path)
+        private static IEnumerable<(string, IDisposable)> GetFiles(string path)
         {
             // this can happen when clone fails
             if (!Directory.Exists(path))
             {
-                return Enumerable.Empty<string>();
+                return Enumerable.Empty<(string, IDisposable)>();
             }
 
-            return Directory.EnumerateFiles(path, "*.cs", SearchOption.AllDirectories);
+            // https://stackoverflow.com/a/8714329/41071
+            void ForceDeleteDirectory()
+            {
+                var directory = new DirectoryInfo(path);
+
+                foreach (var info in directory.GetFileSystemInfos("*", SearchOption.AllDirectories))
+                {
+                    info.Attributes = FileAttributes.Normal;
+                }
+
+                directory.Refresh();
+
+                directory.Delete(true);
+            }
+
+            var disposable = new RefCountDisposable(Disposable.Create(ForceDeleteDirectory));
+
+            // ToList is required, so that all inner disposables are created before the outer is disposed
+            var files = Directory.EnumerateFiles(path, "*.cs", SearchOption.AllDirectories)
+                .Select(f => (f, disposable.GetDisposable()))
+                .ToList();
+
+            disposable.Dispose();
+
+            return files;
         }
 
         private static int i;
 
         private static string Clone(string repo)
         {
-            Console.WriteLine($"{Interlocked.Increment(ref i)}/{Repos.Length} {repo}");
+            Console.WriteLine($"{Interlocked.Increment(ref i)}/{ReposCount} {repo}");
 
             string gitUrl = $"https://github.com/{repo}.git";
             string path = Path.Combine(BasePath, repo.Replace('/', ' '));
@@ -245,7 +263,12 @@ namespace UnderscoreLambdasGithub
             if (Directory.Exists(path))
                 Console.WriteLine($"Directory for {repo} already exists.");
             else
-                Process.Start("git", $"clone {gitUrl} \"{path}\" --depth 1").WaitForExit();
+                Process.Start(
+                    new ProcessStartInfo("git", $"clone {gitUrl} \"{path}\" --depth 1")
+                    {
+                        //RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    }).WaitForExit();
 
             return path;
         }
@@ -255,7 +278,7 @@ namespace UnderscoreLambdasGithub
         static IObservable<string> GetRepos()
         {
             var repoNamesObservable = Observable.Create<IObservable<string>>(
-                async o =>
+                async (o, ct) =>
                 {
                     DateTime start = DateTime.UtcNow;
 
@@ -264,6 +287,12 @@ namespace UnderscoreLambdasGithub
                         var (repoNames, nextStartTask) = GetRepos(start);
 
                         o.OnNext(repoNames);
+
+                        if (ct.IsCancellationRequested)
+                        {
+                            Console.WriteLine("Got enough sets of repos, cancelling.");
+                            ct.ThrowIfCancellationRequested();
+                        }
 
                         start = await nextStartTask;
                     }
@@ -277,7 +306,7 @@ namespace UnderscoreLambdasGithub
             var nextStartTcs = new TaskCompletionSource<DateTime>();
 
             var repoNamesObservable = Observable.Create<string>(
-                async o =>
+                async (o, ct) =>
                 {
                     var client = new HttpClient();
 
@@ -291,6 +320,12 @@ namespace UnderscoreLambdasGithub
                         {
                             while (true)
                             {
+                                if (ct.IsCancellationRequested)
+                                {
+                                    Console.WriteLine("Got enough repos, cancelling.");
+                                    ct.ThrowIfCancellationRequested();
+                                }
+
                                 string url =
                                     $"https://api.github.com/search/repositories?q=language:csharp+stars:%3C=100+pushed:%3C={start:s}&sort=updated&per_page=100&page={i}";
 
@@ -299,7 +334,7 @@ namespace UnderscoreLambdasGithub
                                 HttpResponseMessage response;
                                 try
                                 {
-                                    response = await client.GetAsync(url);
+                                    response = await client.GetAsync(url, ct);
                                 }
                                 catch (OperationCanceledException)
                                 {
@@ -318,7 +353,7 @@ namespace UnderscoreLambdasGithub
                                     Console.WriteLine($"403, waiting for {waitTime.TotalSeconds:F2} s.");
 
                                     if (waitTime > TimeSpan.Zero)
-                                        await Task.Delay(waitTime);
+                                        await Task.Delay(waitTime, ct);
 
                                     continue;
                                 }
