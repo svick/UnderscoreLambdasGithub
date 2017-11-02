@@ -70,16 +70,24 @@ namespace UnderscoreLambdasGithub
             Console.WriteLine($"Total: {lambdaData.TotalSingleLambdasCount}");
             Console.WriteLine($"Underscore: {lambdaData.TotalSingleLambdaUnderscoreCount}");
             Console.WriteLine($"Underscore unused: {lambdaData.TotalSingleLambdaUnderscoreUnusedCount}");
+            Console.WriteLine($"2+ underscore: {lambdaData.TotalSingleLambdaMultiUnderscoreCount}");
+            Console.WriteLine($"2+ underscore unused: {lambdaData.TotalSingleLambdaMultiUnderscoreUnusedCount}");
             Console.WriteLine();
 
             Console.WriteLine("Multi lambdas:");
             Console.WriteLine($"Total: {lambdaData.TotalMultiLambdasCount}");
             Console.WriteLine($"Underscore: {lambdaData.TotalMultiLambdaUnderscoreCount}");
             Console.WriteLine($"Underscore unused: {lambdaData.TotalMultiLambdaUnderscoreUnusedCount}");
+            Console.WriteLine($"Double underscore: {lambdaData.TotalMultiLambdaDoubleUnderscoreCount}");
+            Console.WriteLine($"Double underscore unused: {lambdaData.TotalMultiLambdaDoubleUnderscoreUnusedCount}");
+            Console.WriteLine($"3+ underscore: {lambdaData.TotalMultiLambdaMultiUnderscoreCount}");
+            Console.WriteLine($"3+ underscore unused: {lambdaData.TotalMultiLambdaMultiUnderscoreUnusedCount}");
             Console.WriteLine();
 
             Console.WriteLine($"Discard: {lambdaData.TotalDiscardsCount}");
             Console.WriteLine($"Other underscore: {lambdaData.TotalOtherUnderscoresCount}");
+            Console.WriteLine($"Double underscore: {lambdaData.TotalOtherDoubleUnderscoresCount}");
+            Console.WriteLine($"3+ underscore: {lambdaData.TotalOtherMultiUnderscoresCount}");
         }
 
         private static readonly string BasePath = Path.Combine(Environment.CurrentDirectory, "../UnderscoreLambdasGithubData");
@@ -145,10 +153,8 @@ namespace UnderscoreLambdasGithub
 
             foreach (var name in root.DescendantNodes().OfType<NameSyntax>())
             {
-                if (name.ToString() != name.ToString().Trim())
-                    throw new Exception();
-
-                if (name.ToString() == "_")
+                var nameString = name.ToString();
+                if (nameString.All(c => c == '_'))
                 {
                     var symbol = semanticModel.GetSymbolInfo(name).Symbol;
 
@@ -160,7 +166,12 @@ namespace UnderscoreLambdasGithub
                     {
                         Print(name.Parent);
 
-                        data.OtherUnderscore();
+                        if (nameString == "_")
+                            data.OtherUnderscore();
+                        else if (nameString == "__")
+                            data.OtherDoubleUnderscore();
+                        else
+                            data.OtherMultiUnderscore();
                     }
                 }
             }
@@ -185,16 +196,39 @@ namespace UnderscoreLambdasGithub
         {
             lambdaData.MultiLambda();
 
-            var underscoreParameter = parameterSymbols.FirstOrDefault(s => s.Name == "_");
-            if (underscoreParameter != null)
-            {
-                lambdaData.MultiLambdaUnderscore();
+            var underscoreParameters = parameterSymbols.Where(s => s.Name.All(c => c == '_'));
 
-                if (!names.Contains(underscoreParameter))
+            foreach (var underscoreParameter in underscoreParameters)
+            {
+                if (underscoreParameter.Name == "_")
                 {
-                    lambdaData.MultiLambdaUnderscoreUnused();
+                    lambdaData.MultiLambdaUnderscore();
+
+                    if (!names.Contains(underscoreParameter))
+                    {
+                        lambdaData.MultiLambdaUnderscoreUnused();
+                    }
+                }
+                else if (underscoreParameter.Name == "__")
+                {
+                    lambdaData.MultiLambdaDoubleUnderscore();
+
+                    if (!names.Contains(underscoreParameter))
+                    {
+                        lambdaData.MultiLambdaDoubleUnderscoreUnused();
+                    }
+                }
+                else
+                {
+                    lambdaData.MultiLambdaMultiUnderscore();
+
+                    if (!names.Contains(underscoreParameter))
+                    {
+                        lambdaData.MultiLambdaMultiUnderscoreUnused();
+                    }
                 }
             }
+
         }
 
         private static void SingleLambda(Data lambdaData, List<ISymbol> names, IParameterSymbol parameterSymbol)
@@ -208,6 +242,15 @@ namespace UnderscoreLambdasGithub
                 if (!names.Contains(parameterSymbol))
                 {
                     lambdaData.SingleLambdaUnderscoreUnused();
+                }
+            }
+            else if (parameterSymbol.Name.All(c => c == '_'))
+            {
+                lambdaData.SingleLambdaMultiUnderscore();
+
+                if (!names.Contains(parameterSymbol))
+                {
+                    lambdaData.SingleLambdaMultiUnderscoreUnused();
                 }
             }
         }
@@ -401,6 +444,12 @@ namespace UnderscoreLambdasGithub
         public int TotalSingleLambdaUnderscoreUnusedCount { get; private set; }
         public void SingleLambdaUnderscoreUnused() => TotalSingleLambdaUnderscoreUnusedCount++;
 
+        public int TotalSingleLambdaMultiUnderscoreCount { get; private set; }
+        public void SingleLambdaMultiUnderscore() => TotalSingleLambdaMultiUnderscoreCount++;
+
+        public int TotalSingleLambdaMultiUnderscoreUnusedCount { get; private set; }
+        public void SingleLambdaMultiUnderscoreUnused() => TotalSingleLambdaMultiUnderscoreUnusedCount++;
+
         public int TotalMultiLambdasCount { get; private set; }
         public void MultiLambda() => TotalMultiLambdasCount++;
 
@@ -410,8 +459,26 @@ namespace UnderscoreLambdasGithub
         public int TotalMultiLambdaUnderscoreUnusedCount { get; private set; }
         public void MultiLambdaUnderscoreUnused() => TotalMultiLambdaUnderscoreUnusedCount++;
 
+        public int TotalMultiLambdaDoubleUnderscoreCount { get; private set; }
+        public void MultiLambdaDoubleUnderscore() => TotalMultiLambdaDoubleUnderscoreCount++;
+
+        public int TotalMultiLambdaDoubleUnderscoreUnusedCount { get; private set; }
+        public void MultiLambdaDoubleUnderscoreUnused() => TotalMultiLambdaDoubleUnderscoreUnusedCount++;
+
+        public int TotalMultiLambdaMultiUnderscoreCount { get; private set; }
+        public void MultiLambdaMultiUnderscore() => TotalMultiLambdaMultiUnderscoreCount++;
+
+        public int TotalMultiLambdaMultiUnderscoreUnusedCount { get; private set; }
+        public void MultiLambdaMultiUnderscoreUnused() => TotalMultiLambdaMultiUnderscoreUnusedCount++;
+
         public int TotalOtherUnderscoresCount { get; private set; }
         public void OtherUnderscore() => TotalOtherUnderscoresCount++;
+
+        public int TotalOtherDoubleUnderscoresCount { get; private set; }
+        public void OtherDoubleUnderscore() => TotalOtherDoubleUnderscoresCount++;
+
+        public int TotalOtherMultiUnderscoresCount { get; private set; }
+        public void OtherMultiUnderscore() => TotalOtherMultiUnderscoresCount++;
 
         public int TotalDiscardsCount { get; private set; }
         public void Discard() => TotalDiscardsCount++;
@@ -421,12 +488,21 @@ namespace UnderscoreLambdasGithub
             this.TotalSingleLambdasCount += other.TotalSingleLambdasCount;
             this.TotalSingleLambdaUnderscoreCount += other.TotalSingleLambdaUnderscoreCount;
             this.TotalSingleLambdaUnderscoreUnusedCount += other.TotalSingleLambdaUnderscoreUnusedCount;
+            this.TotalSingleLambdaMultiUnderscoreCount += other.TotalSingleLambdaMultiUnderscoreCount;
+            this.TotalSingleLambdaMultiUnderscoreUnusedCount += other.TotalSingleLambdaMultiUnderscoreUnusedCount;
 
             this.TotalMultiLambdasCount += other.TotalMultiLambdasCount;
             this.TotalMultiLambdaUnderscoreCount += other.TotalMultiLambdaUnderscoreCount;
             this.TotalMultiLambdaUnderscoreUnusedCount += other.TotalMultiLambdaUnderscoreUnusedCount;
+            this.TotalMultiLambdaDoubleUnderscoreCount += other.TotalMultiLambdaDoubleUnderscoreCount;
+            this.TotalMultiLambdaDoubleUnderscoreUnusedCount += other.TotalMultiLambdaDoubleUnderscoreUnusedCount;
+            this.TotalMultiLambdaMultiUnderscoreCount += other.TotalMultiLambdaMultiUnderscoreCount;
+            this.TotalMultiLambdaMultiUnderscoreUnusedCount += other.TotalMultiLambdaMultiUnderscoreUnusedCount;
 
             this.TotalOtherUnderscoresCount += other.TotalOtherUnderscoresCount;
+            this.TotalOtherDoubleUnderscoresCount += other.TotalOtherDoubleUnderscoresCount;
+            this.TotalOtherMultiUnderscoresCount += other.TotalOtherMultiUnderscoresCount;
+
             this.TotalDiscardsCount += other.TotalDiscardsCount;
         }
     }
